@@ -1452,12 +1452,12 @@ function getResolutionSeconds(resolution) {
   return 15 * 60;
 }
 
-const TRADINGVIEW_XAU_SCAN_ENDPOINTS = [
-  '/api/tv-xau-scan',
-  'https://scanner.tradingview.com/cfd/scan',
-];
+const TRADINGVIEW_XAU_SCAN_ENDPOINTS = [];
 
 const MARKET_TICKER_INSTRUMENTS = [
+  { id: 'XAUUSD', symbol: 'OANDA:XAUUSD', decimals: 2 },
+  { id: 'DXY', symbol: 'TVC:DXY', decimals: 2 },
+  { id: 'US10Y', symbol: 'TVC:US10Y', decimals: 2 },
   { id: 'XAUUSD', symbol: 'OANDA:XAUUSD', decimals: 2 },
   { id: 'DXY', symbol: 'TVC:DXY', decimals: 2 },
   { id: 'US10Y', symbol: 'TVC:US10Y', decimals: 2 },
