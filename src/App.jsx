@@ -1458,9 +1458,6 @@ const MARKET_TICKER_INSTRUMENTS = [
   { id: 'XAUUSD', symbol: 'OANDA:XAUUSD', decimals: 2 },
   { id: 'DXY', symbol: 'TVC:DXY', decimals: 2 },
   { id: 'US10Y', symbol: 'TVC:US10Y', decimals: 2 },
-  { id: 'XAUUSD', symbol: 'OANDA:XAUUSD', decimals: 2 },
-  { id: 'DXY', symbol: 'TVC:DXY', decimals: 2 },
-  { id: 'US10Y', symbol: 'TVC:US10Y', decimals: 2 },
 ];
 const MARKET_TICKER_REFRESH_MS = 7000;
 
@@ -1830,7 +1827,6 @@ const PYROMANCER_RISK_STATES = {
 const PYROMANCER_FOREX_FACTORY_URLS = [];
 const FF_CALENDAR_ENDPOINTS = [];
 
-function getFallbackCalendarData() {
 const PYROMANCER_FOREX_FACTORY_CALENDAR_URL = 'https://www.forexfactory.com/calendar';
 const PYROMANCER_CALENDAR_REFRESH_MS = 15 * 60 * 1000;
 const PYROMANCER_CAUTION_WINDOW_BEFORE = 60;
