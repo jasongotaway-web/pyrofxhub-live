@@ -1828,9 +1828,9 @@ const PYROMANCER_RISK_STATES = {
 };
 
 const PYROMANCER_FOREX_FACTORY_URLS = [
-  '/api/ff-calendar',
-  'https://nfs.faireconomy.media/ff_calendar_thisweek.xml',
-];
+const FF_CALENDAR_ENDPOINTS = [];
+
+function getFallbackCalendarData() {
 const PYROMANCER_FOREX_FACTORY_CALENDAR_URL = 'https://www.forexfactory.com/calendar';
 const PYROMANCER_CALENDAR_REFRESH_MS = 15 * 60 * 1000;
 const PYROMANCER_CAUTION_WINDOW_BEFORE = 60;
