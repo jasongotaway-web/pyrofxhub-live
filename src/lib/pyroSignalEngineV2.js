@@ -14,10 +14,16 @@ const CONFIG = {
   standbyProximityATR: 0.35,
   triggerProximityATR: 0.18,
   beTriggerR: 0.5,
+  minInputPrice: 1000,
+  maxInputPrice: 10000,
+  minCandles: 40,
+  maxCandleRange: 250,
+  maxLiveCandleDrift: 75,
 };
 
 function round2(n) {
-  return Number((n ?? 0).toFixed(2));
+  const number = Number(n);
+  return Number.isFinite(number) ? Number(number.toFixed(2)) : 0;
 }
 
 function clamp(n, min, max) {
@@ -34,6 +40,67 @@ function fromPips(pips) {
 
 function safeNumber(n, fallback = 0) {
   return Number.isFinite(Number(n)) ? Number(n) : fallback;
+}
+
+function isValidPrice(n) {
+  const number = Number(n);
+  return Number.isFinite(number) && number >= CONFIG.minInputPrice && number <= CONFIG.maxInputPrice;
+}
+
+function sanitizeCandles(candles) {
+  if (!Array.isArray(candles)) return [];
+
+  return candles
+    .map((candle) => {
+      const time = Number(candle?.time);
+      const open = Number(candle?.open);
+      const high = Number(candle?.high);
+      const low = Number(candle?.low);
+      const close = Number(candle?.close);
+
+      if (![open, high, low, close].every(isValidPrice)) return null;
+      if (high < Math.max(open, close) || low > Math.min(open, close)) return null;
+      if (high - low <= 0 || high - low > CONFIG.maxCandleRange) return null;
+
+      return {
+        time: Number.isFinite(time) && time > 0 ? time : 0,
+        open: round2(open),
+        high: round2(high),
+        low: round2(low),
+        close: round2(close),
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.time - b.time)
+    .slice(-80);
+}
+
+function buildStandbySignal({ timeframe, bucketId, livePrice, status = 'No Valid Setup', explanation }) {
+  const displayPrice = isValidPrice(livePrice) ? round2(livePrice) : null;
+
+  return {
+    symbol: CONFIG.symbol,
+    timeframe,
+    title: `WAIT ${CONFIG.symbol}`,
+    side: 'WAIT',
+    confidence: 50,
+    entry: displayPrice,
+    stop: null,
+    target: null,
+    bePrice: null,
+    livePrice: displayPrice,
+    validity: 'STANDBY',
+    status,
+    progressPercent: 0,
+    explanation: explanation || 'Waiting for valid chart-aligned market data before generating a setup.',
+    stopPips: null,
+    rr: null,
+    generatedAt: new Date().toISOString(),
+    bucketId,
+    meta: {
+      inputReady: false,
+    },
+  };
 }
 
 function ema(values, period) {
@@ -213,6 +280,25 @@ function isSetupInCurrentMarketZone(setup, livePrice, atrValue) {
   return drift <= maxDrift;
 }
 
+function isValidSetup(setup) {
+  if (!setup || (setup.side !== 'BUY' && setup.side !== 'SELL')) return false;
+  const entry = Number(setup.entry);
+  const stop = Number(setup.stop);
+  const target = Number(setup.target);
+  const bePrice = Number(setup.bePrice);
+  if (![entry, stop, target].every(isValidPrice)) return false;
+  if (Number.isFinite(bePrice) && !isValidPrice(bePrice)) return false;
+
+  const stopDistance = Math.abs(entry - stop);
+  const targetDistance = Math.abs(target - entry);
+  const stopPips = toPips(stopDistance);
+  if (stopPips < CONFIG.minSlPips || stopPips > CONFIG.maxSlPips) return false;
+  if (targetDistance <= 0 || targetDistance > stopDistance * 4) return false;
+
+  if (setup.side === 'BUY') return stop < entry && target > entry;
+  return stop > entry && target < entry;
+}
+
 function calcProgressPercent(setup, livePrice) {
   if (!setup) return 0;
   if (setup.side === 'BUY') {
@@ -342,36 +428,48 @@ export function buildPyroSignalV2({
   timeframe = CONFIG.timeframe,
   bucketId = null,
   previousSignal = null,
+  inputReady = true,
+  invalidReason = '',
 }) {
-  if (!Array.isArray(candles) || candles.length < 40) {
-    return {
-      symbol: CONFIG.symbol,
-      timeframe,
-      title: `WAIT ${CONFIG.symbol}`,
-      side: 'WAIT',
-      confidence: 50,
-      entry: null,
-      stop: null,
-      target: null,
-      bePrice: null,
-      livePrice: round2(safeNumber(livePrice, 0)),
-      validity: 'STANDBY',
-      status: 'No Valid Setup',
-      progressPercent: 0,
-      explanation: 'Not enough chart-aligned candle data to generate a valid setup.',
-      stopPips: null,
-      rr: null,
-      generatedAt: new Date().toISOString(),
+  const normalizedTimeframe = String(timeframe || CONFIG.timeframe);
+  const safeCandles = sanitizeCandles(candles);
+  const fallbackLivePrice = safeCandles[safeCandles.length - 1]?.close;
+  const currentPriceCandidate = isValidPrice(livePrice) ? Number(livePrice) : fallbackLivePrice;
+
+  if (!inputReady) {
+    return buildStandbySignal({
+      timeframe: normalizedTimeframe,
       bucketId,
-    };
+      livePrice: currentPriceCandidate,
+      explanation: invalidReason || 'Waiting for verified live signal inputs.',
+    });
   }
 
-  const currentPrice = round2(safeNumber(livePrice, candles[candles.length - 1].close));
-  const structure = getStructure(candles);
-  const trend = getTrend(candles);
-  const atrValue = calculateATR(candles, CONFIG.atrPeriod);
-  const momentum = getMomentum(candles);
-  const volRegime = getVolRegime(candles);
+  if (safeCandles.length < CONFIG.minCandles || !isValidPrice(currentPriceCandidate)) {
+    return buildStandbySignal({
+      timeframe: normalizedTimeframe,
+      bucketId,
+      livePrice: currentPriceCandidate,
+      explanation: 'Not enough valid chart-aligned candle data to generate a setup.',
+    });
+  }
+
+  const latestClose = safeCandles[safeCandles.length - 1].close;
+  if (Math.abs(currentPriceCandidate - latestClose) > CONFIG.maxLiveCandleDrift) {
+    return buildStandbySignal({
+      timeframe: normalizedTimeframe,
+      bucketId,
+      livePrice: currentPriceCandidate,
+      explanation: 'Live price and candle feed are not aligned enough to generate a setup.',
+    });
+  }
+
+  const currentPrice = round2(currentPriceCandidate);
+  const structure = getStructure(safeCandles);
+  const trend = getTrend(safeCandles);
+  const atrValue = calculateATR(safeCandles, CONFIG.atrPeriod);
+  const momentum = getMomentum(safeCandles);
+  const volRegime = getVolRegime(safeCandles);
 
   const bias = detectDirectionalBias({
     livePrice: currentPrice,
@@ -387,44 +485,60 @@ export function buildPyroSignalV2({
     atrValue,
   });
 
+  if (!isValidSetup(candidateSetup)) {
+    candidateSetup = null;
+  }
+
   const zoneAligned = isSetupInCurrentMarketZone(candidateSetup, currentPrice, atrValue);
 
   if (!zoneAligned) {
     candidateSetup = null;
   }
 
+  const previousSetup = previousSignal
+    ? {
+        side: previousSignal.side,
+        entry: previousSignal.entry,
+        stop: previousSignal.stop,
+        target: previousSignal.target,
+        bePrice: previousSignal.bePrice,
+      }
+    : null;
   const prevSameBucket = previousSignal && previousSignal.bucketId === bucketId;
   const prevSetupStillUsable =
     prevSameBucket &&
-    previousSignal.entry != null &&
+    isValidSetup(previousSetup) &&
     Math.abs(currentPrice - previousSignal.entry) <= Math.max(atrValue, fromPips(CONFIG.minSlPips));
 
   let activeSetup = candidateSetup;
 
   if (!activeSetup && prevSetupStillUsable) {
     activeSetup = {
-      side: previousSignal.side === 'BUY' || previousSignal.side === 'SELL' ? previousSignal.side : 'WAIT',
-      entry: safeNumber(previousSignal.entry, currentPrice),
-      stop: safeNumber(previousSignal.stop, currentPrice),
-      target: safeNumber(previousSignal.target, currentPrice),
-      bePrice: safeNumber(previousSignal.bePrice, currentPrice),
-      stopDistance: Math.abs(safeNumber(previousSignal.entry, currentPrice) - safeNumber(previousSignal.stop, currentPrice)),
-      stopPips: Math.round(toPips(Math.abs(safeNumber(previousSignal.entry, currentPrice) - safeNumber(previousSignal.stop, currentPrice)))),
+      side: previousSetup.side,
+      entry: round2(previousSetup.entry),
+      stop: round2(previousSetup.stop),
+      target: round2(previousSetup.target),
+      bePrice: round2(previousSetup.bePrice),
+      stopDistance: round2(Math.abs(previousSetup.entry - previousSetup.stop)),
+      stopPips: Math.round(toPips(Math.abs(previousSetup.entry - previousSetup.stop))),
     };
   }
 
   const state = calcTriggerState(activeSetup, currentPrice, atrValue);
-  const confidence = scoreConfidence({
-    side: state.title.startsWith('BUY') ? 'BUY' : state.title.startsWith('SELL') ? 'SELL' : 'WAIT',
-    trend,
-    volRegime,
-    momentum,
-    zoneAligned: !!activeSetup,
-  });
+  const hasActionableSetup = isValidSetup(activeSetup) && state.validity === 'VALID';
+  const confidence = hasActionableSetup
+    ? scoreConfidence({
+        side: state.title.startsWith('BUY') ? 'BUY' : state.title.startsWith('SELL') ? 'SELL' : 'WAIT',
+        trend,
+        volRegime,
+        momentum,
+        zoneAligned: true,
+      })
+    : 50;
 
   return {
     symbol: CONFIG.symbol,
-    timeframe,
+    timeframe: normalizedTimeframe,
     title: state.title,
     side: state.title.startsWith('BUY')
       ? 'BUY'

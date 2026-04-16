@@ -30,6 +30,14 @@ const APP_TIME_ZONE = 'Asia/Singapore';
 const APP_GMT8_OFFSET_MS = 8 * 60 * 60 * 1000;
 const WEB3FORMS_ACCESS_KEY = '3a2768c0-52df-46c3-a74e-fdbf1ffec7b6';
 const WEB3FORMS_ENDPOINT = 'https://api.web3forms.com/submit';
+const XAU_PRICE_MIN = 1000;
+const XAU_PRICE_MAX = 10000;
+const SIGNAL_MIN_CANDLES = 40;
+const SIGNAL_ACTIONABLE_SOURCES = new Set(['netlify-tv-xau-scan']);
+const MAX_ACCOUNT_BALANCE = 10000000;
+const MAX_RISK_PERCENT = 10;
+const MAX_CALCULATOR_LOTS = 100;
+const MAX_CALCULATOR_STOP_PIPS = 500;
 
 function getSignalRefreshBucket(now = Date.now()) {
   return Math.floor(now / SIGNAL_REFRESH_MS);
@@ -183,6 +191,10 @@ function getManualAlertConfig(inputs) {
     return { valid: false, entry, stop, target, direction: null, reason: 'Fill all levels' };
   }
 
+  if (![entry, stop, target].every(isValidXauPrice)) {
+    return { valid: false, entry, stop, target, direction: null, reason: 'Use valid XAUUSD levels' };
+  }
+
   if (target === entry || stop === entry || stop === target) {
     return { valid: false, entry, stop, target, direction: null, reason: 'Levels must be distinct' };
   }
@@ -194,6 +206,81 @@ function getManualAlertConfig(inputs) {
   }
 
   return { valid: true, entry, stop, target, direction, reason: '' };
+}
+
+function isValidXauPrice(value) {
+  return Number.isFinite(value) && value >= XAU_PRICE_MIN && value <= XAU_PRICE_MAX;
+}
+
+function sanitizeSignalCandles(candles) {
+  if (!Array.isArray(candles)) return [];
+
+  return candles
+    .map((candle) => {
+      const time = Number(candle?.time);
+      const open = Number(candle?.open);
+      const high = Number(candle?.high);
+      const low = Number(candle?.low);
+      const close = Number(candle?.close);
+
+      if (![open, high, low, close].every(isValidXauPrice)) return null;
+      if (high < Math.max(open, close) || low > Math.min(open, close)) return null;
+      if (high - low <= 0 || high - low > 250) return null;
+
+      return {
+        time: Number.isFinite(time) && time > 0 ? time : 0,
+        open: roundPrice(open),
+        high: roundPrice(high),
+        low: roundPrice(low),
+        close: roundPrice(close),
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => safeNumber(a.time, 0) - safeNumber(b.time, 0))
+    .slice(-80);
+}
+
+function validateSignalEngineInput(input) {
+  const timeframe = String(input?.timeframe ?? '15').replace(/[^0-9A-Z]/gi, '') || '15';
+  const source = String(input?.source ?? 'unknown');
+  const candles = sanitizeSignalCandles(input?.candles);
+  const livePrice = Number(input?.livePrice);
+  const hasLivePrice = isValidXauPrice(livePrice);
+  const hasCandles = candles.length >= SIGNAL_MIN_CANDLES;
+  const hasActionableSource = SIGNAL_ACTIONABLE_SOURCES.has(source);
+  const latestClose = candles[candles.length - 1]?.close;
+  const liveMatchesCandles = hasLivePrice && isValidXauPrice(latestClose)
+    ? Math.abs(livePrice - latestClose) <= 75
+    : false;
+  const actionable = hasLivePrice && hasCandles && liveMatchesCandles && hasActionableSource;
+  const reason = !hasActionableSource
+    ? 'Waiting for verified live signal feed.'
+    : !hasLivePrice
+      ? 'Waiting for valid live price.'
+      : !hasCandles
+        ? 'Waiting for enough valid candles.'
+        : !liveMatchesCandles
+          ? 'Live price and candle feed are not aligned.'
+          : '';
+
+  return {
+    actionable,
+    reason,
+    input: {
+      candles: actionable ? candles : [],
+      livePrice: hasLivePrice ? roundPrice(livePrice) : null,
+      timeframe,
+      source,
+      bucketId: input?.bucketId ?? null,
+    },
+  };
+}
+
+function clampCalculatorInput(value, maxValue) {
+  if (value === '' || value == null) return '';
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0) return '';
+  return Math.min(number, maxValue);
 }
 
 function playManualAlertSound(audioContextRef, type) {
@@ -1452,7 +1539,7 @@ function getResolutionSeconds(resolution) {
   return 15 * 60;
 }
 
-const TRADINGVIEW_XAU_SCAN_ENDPOINTS = [];
+const TRADINGVIEW_XAU_SCAN_ENDPOINTS = ['/.netlify/functions/tv-xau-scan'];
 
 const MARKET_TICKER_INSTRUMENTS = [
   { id: 'XAUUSD', symbol: 'OANDA:XAUUSD', decimals: 2 },
@@ -1543,6 +1630,22 @@ function buildXauScanPayload(tf) {
 }
 
 function normalizeXauScanResponse(body, tf) {
+  const normalizedCandles = sanitizeSignalCandles(body?.candles);
+  const normalizedLivePrice = Number(body?.livePrice);
+  if (
+    body?.ok !== false &&
+    body?.source === 'netlify-tv-xau-scan' &&
+    Number.isFinite(normalizedLivePrice) &&
+    normalizedCandles.length >= 2
+  ) {
+    return {
+      candles: normalizedCandles,
+      livePrice: roundPrice(normalizedLivePrice),
+      timeframe: String(body?.timeframe ?? tf).replace(/[^0-9A-Z]/gi, '') || tf,
+      source: 'netlify-tv-xau-scan',
+    };
+  }
+
   const values = body?.data?.[0]?.d;
   if (!Array.isArray(values)) return null;
 
@@ -2256,16 +2359,20 @@ const App = () => {
     }
   }['CN'];
 
+  const validatedSignalCardEngineInput = useMemo(
+    () => validateSignalEngineInput(signalCardEngineInput),
+    [signalCardEngineInput]
+  );
+
   const signalCardEngineSignal = useMemo(
     () =>
       buildPyroSignalV2({
-        candles: signalCardEngineInput.candles,
-        livePrice: signalCardEngineInput.livePrice,
-        timeframe: signalCardEngineInput.timeframe,
-        bucketId: signalCardEngineInput.bucketId,
-        previousSignal: signalCardPreviousSignalRef.current,
+        ...validatedSignalCardEngineInput.input,
+        inputReady: validatedSignalCardEngineInput.actionable,
+        invalidReason: validatedSignalCardEngineInput.reason,
+        previousSignal: validatedSignalCardEngineInput.actionable ? signalCardPreviousSignalRef.current : null,
       }),
-    [signalCardEngineInput]
+    [validatedSignalCardEngineInput]
   );
 
   useEffect(() => {
@@ -2322,11 +2429,11 @@ const App = () => {
   }, [signalCardEngineSignal]);
 
   const riskCalculator = useMemo(() => {
-    const accountBalance = Number(balance);
-    const riskRate = Number(riskPercent);
+    const accountBalance = clampCalculatorInput(balance, MAX_ACCOUNT_BALANCE);
+    const riskRate = clampCalculatorInput(riskPercent, MAX_RISK_PERCENT);
     const dollarPerPointPerLot = 100;
-    const hasAccountBalance = Number.isFinite(accountBalance) && accountBalance > 0;
-    const hasRiskRate = Number.isFinite(riskRate) && riskRate > 0;
+    const hasAccountBalance = Number.isFinite(accountBalance) && accountBalance > 0 && accountBalance <= MAX_ACCOUNT_BALANCE;
+    const hasRiskRate = Number.isFinite(riskRate) && riskRate > 0 && riskRate <= MAX_RISK_PERCENT;
     const hasStopLoss =
       Number.isFinite(signalCardBase.entry) &&
       signalCardBase.entry > 0 &&
@@ -2338,9 +2445,13 @@ const App = () => {
         ? Math.max(1, Math.ceil(Math.abs(signalCardBase.entry - signalCardBase.stop) * 10))
         : 0;
     const stopDistancePoints = stopDistancePips / 10;
-    const canCalculate = hasAccountBalance && hasRiskRate && stopDistancePoints > 0;
+    const hasSaneStopDistance = stopDistancePips > 0 && stopDistancePips <= MAX_CALCULATOR_STOP_PIPS;
+    const canCalculate = hasAccountBalance && hasRiskRate && hasSaneStopDistance;
     const lots = canCalculate
-        ? Math.max(0.01, Number((riskAmount / (stopDistancePoints * dollarPerPointPerLot)).toFixed(2)))
+        ? Math.min(
+            MAX_CALCULATOR_LOTS,
+            Math.max(0.01, Number((riskAmount / (stopDistancePoints * dollarPerPointPerLot)).toFixed(2)))
+          )
         : 0.01;
     const emptyReason = !hasAccountBalance
       ? 'Enter account value to calculate lot size'
@@ -2348,6 +2459,8 @@ const App = () => {
         ? 'Enter risk percentage to calculate lot size'
         : !hasStopLoss
           ? 'Minimum lot shown until stop loss is set'
+          : !hasSaneStopDistance
+            ? 'Minimum lot shown until stop distance is valid'
           : '';
 
     return {
@@ -3379,8 +3492,8 @@ const App = () => {
         {/* 底部输入与计算器 */}
         <div className="basis-[30%] shrink-0 p-4 bg-[#060606] border-t border-white/5 rounded-t-[2.5rem] shadow-2xl flex flex-col justify-start">
            <div className="grid grid-cols-2 gap-3 mb-3">
-              <InputBox label={t.balance} value={balance} onChange={setBalance} suffix="$" />
-              <InputBox label={t.alloc} value={riskPercent} onChange={setRiskPercent} color="#ff4d6d" suffix="%" />
+              <InputBox label={t.balance} value={balance} onChange={(value) => setBalance(clampCalculatorInput(value, MAX_ACCOUNT_BALANCE))} suffix="$" />
+              <InputBox label={t.alloc} value={riskPercent} onChange={(value) => setRiskPercent(clampCalculatorInput(value, MAX_RISK_PERCENT))} color="#ff4d6d" suffix="%" />
            </div>
            
            <div className="w-full bg-[#00FFA3]/5 border border-[#00FFA3]/20 rounded-[1rem] p-2 text-left relative overflow-hidden group hover:bg-[#00FFA3]/10 transition-all shadow-2xl">
