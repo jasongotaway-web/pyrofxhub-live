@@ -1827,7 +1827,7 @@ const PYROMANCER_RISK_STATES = {
   LOCKED: 'LOCKED',
 };
 
-const PYROMANCER_FOREX_FACTORY_URLS = [
+const PYROMANCER_FOREX_FACTORY_URLS = [];
 const FF_CALENDAR_ENDPOINTS = [];
 
 function getFallbackCalendarData() {
