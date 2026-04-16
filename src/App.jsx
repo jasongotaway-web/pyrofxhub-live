@@ -102,6 +102,17 @@ function buildSignalCardDisplay(signal) {
   const rawStatus = signal.status;
   const side = signal.side === 'BUY' || signal.side === 'SELL' ? signal.side : 'WAIT';
 
+  if (rawStatus === 'SIGNAL PAUSED') {
+    return {
+      readiness: 'PAUSED',
+      statusLabel: 'SIGNAL PAUSED',
+      valid: false,
+      actionText: 'Live data unavailable. Waiting for valid market feed.',
+      explanation: '',
+      invalidationText: 'Entry, target, stop, and lot size stay hidden until verified live data returns.',
+    };
+  }
+
   if (!hasTradableLevels || side === 'WAIT' || validity === 'STANDBY') {
     return {
       readiness: 'WAITING',
@@ -267,7 +278,9 @@ function validateSignalEngineInput(input) {
             ? 'live_price_mismatch'
             : 'input_ready';
   const reason = !hasActionableSource
-    ? 'Waiting for verified live signal feed.'
+    ? source === 'scanner-unavailable'
+      ? 'Live data unavailable. Waiting for valid market feed.'
+      : 'Waiting for verified live signal feed.'
     : !hasLivePrice
       ? 'Waiting for valid live price.'
       : !hasCandles
@@ -1572,7 +1585,7 @@ function buildContextualOverlay({ candles, livePrice, liquidityDecision, signalC
     zone === 'Mid-range' ? 'still inside mid-range' : null,
     liquidityDecision?.postSweepRead === 'No confirmation' ? 'no confirmed reaction yet' : null,
     session === 'Off-session' ? 'off-session conditions' : null,
-    newsLockState !== PYROMANCER_RISK_STATES.CLEAR ? 'event risk is active' : null,
+    newsLockState !== PYROMANCER_RISK_STATES.CLEAR && newsLockState !== PYROMANCER_RISK_STATES.INACTIVE ? 'event risk is active' : null,
   ].filter(Boolean);
   const actionBias =
     newsLockState === PYROMANCER_RISK_STATES.LOCKED
@@ -1609,7 +1622,7 @@ function buildContextualOverlay({ candles, livePrice, liquidityDecision, signalC
       { label: 'Volatility', value: volatilityState === 'Expanding' ? 'Strong' : volatilityState === 'Compressing' ? 'Weak' : 'Moderate' },
       { label: 'Liquidity Pressure', value: liquidityDecision?.currentDraw === 'Neutral' ? 'Mixed' : liquidityDecision?.currentDraw ?? 'Mixed' },
       { label: 'Session Quality', value: session === 'Off-session' ? 'Weak' : session === 'Asia' ? 'Moderate' : 'Strong' },
-      { label: 'News Lock', value: newsLockState === PYROMANCER_RISK_STATES.LOCKED ? 'Locked' : newsLockState === PYROMANCER_RISK_STATES.CAUTION ? 'Caution' : 'Clear' },
+      { label: 'News Lock', value: newsLockState === PYROMANCER_RISK_STATES.INACTIVE ? 'Inactive' : newsLockState === PYROMANCER_RISK_STATES.LOCKED ? 'Locked' : newsLockState === PYROMANCER_RISK_STATES.CAUTION ? 'Caution' : 'Clear' },
     ],
     currentRead: `${marketRegime} conditions with ${structureState.toLowerCase()} around ${zone.toLowerCase()}.`,
     bestUseCase: signalEnvironment === 'Supportive' ? 'Use context to hold bias while confirmation stays aligned.' : 'Use context to filter entries until alignment improves.',
@@ -1948,7 +1961,16 @@ function renderLocalXauChart(container, feed) {
 async function fetchIndependentXauSignalFeed(resolution = '15') {
   const tf = String(resolution ?? '15').replace(/[^0-9A-Z]/gi, '') || '15';
   const scannerFeed = await requestXauScanFeed(tf);
-  return scannerFeed ?? buildFallbackIndependentXauSignalFeed(tf);
+  return scannerFeed;
+}
+
+function buildPausedSignalFeed(resolution = '15') {
+  return {
+    candles: [],
+    livePrice: null,
+    timeframe: String(resolution ?? '15').replace(/[^0-9A-Z]/gi, '') || '15',
+    source: 'scanner-unavailable',
+  };
 }
 
 function mergeIndependentSignalCandles(existingCandles, incomingCandles, resolution = '15', minimumCount = 40) {
@@ -2012,6 +2034,7 @@ function mergeIndependentSignalCandles(existingCandles, incomingCandles, resolut
 }
 
 const PYROMANCER_RISK_STATES = {
+  INACTIVE: 'INACTIVE',
   CLEAR: 'CLEAR',
   CAUTION: 'CAUTION',
   LOCKED: 'LOCKED',
@@ -2019,6 +2042,7 @@ const PYROMANCER_RISK_STATES = {
 
 const PYROMANCER_FOREX_FACTORY_URLS = [];
 const FF_CALENDAR_ENDPOINTS = [];
+const PYROMANCER_FEED_CONNECTED = PYROMANCER_FOREX_FACTORY_URLS.length > 0 || FF_CALENDAR_ENDPOINTS.length > 0;
 
 const PYROMANCER_FOREX_FACTORY_CALENDAR_URL = 'https://www.forexfactory.com/calendar';
 const PYROMANCER_CALENDAR_REFRESH_MS = 15 * 60 * 1000;
@@ -2150,6 +2174,24 @@ async function fetchPyromancerCalendarEvents(now = new Date()) {
 }
 
 function buildPyromancerOutput(events, now = new Date()) {
+  if (!PYROMANCER_FEED_CONNECTED) {
+    return {
+      currentRiskState: PYROMANCER_RISK_STATES.INACTIVE,
+      nextEventName: 'Economic event feed not connected',
+      nextEventTime: null,
+      countdownText: 'Inactive',
+      nextMajorEventDisplay: 'Economic event feed not connected',
+      clearUntilText: 'Macro event lock: inactive',
+      affectedMarket: 'XAUUSD / USD',
+      sourceUrl: PYROMANCER_FOREX_FACTORY_CALENDAR_URL,
+      hasRealEvent: false,
+      feedConnected: false,
+      guidanceText: 'Economic event feed is not connected. Do not treat this as active live macro protection.',
+      isSignalLocked: false,
+      upcomingEvents: [],
+    };
+  }
+
   const enrichedEvents = (Array.isArray(events) ? events : [])
     .map((event) => {
       const timeToEventMinutes = Math.round((event.eventTime.getTime() - now.getTime()) / 60000);
@@ -2190,6 +2232,7 @@ function buildPyromancerOutput(events, now = new Date()) {
     affectedMarket: nextRelevantEvent?.affectedMarket ?? 'XAUUSD / USD',
     sourceUrl: nextRelevantEvent?.sourceUrl ?? PYROMANCER_FOREX_FACTORY_CALENDAR_URL,
     hasRealEvent: !!nextRelevantEvent,
+    feedConnected: true,
     guidanceText,
     isSignalLocked: currentRiskState === PYROMANCER_RISK_STATES.LOCKED,
     upcomingEvents: enrichedEvents.slice(0, 3),
@@ -2533,6 +2576,18 @@ const App = () => {
   }, [signalCardEngineSignal]);
 
   const riskCalculator = useMemo(() => {
+    const signalPaused = signalCardBase.statusLabel === 'SIGNAL PAUSED';
+    if (signalPaused) {
+      return {
+        riskAmount: null,
+        stopDistancePips: null,
+        lots: null,
+        canCalculate: false,
+        emptyReason: 'Lot size paused until valid market feed returns',
+        paused: true,
+      };
+    }
+
     const accountBalance = clampCalculatorInput(balance, MAX_ACCOUNT_BALANCE);
     const riskRate = clampCalculatorInput(riskPercent, MAX_RISK_PERCENT);
     const dollarPerPointPerLot = 100;
@@ -2573,8 +2628,9 @@ const App = () => {
       lots,
       canCalculate,
       emptyReason,
+      paused: false,
     };
-  }, [balance, riskPercent, signalCardBase.entry, signalCardBase.stop]);
+  }, [balance, riskPercent, signalCardBase.entry, signalCardBase.statusLabel, signalCardBase.stop]);
 
   const tradeArchiveData = useMemo(() => {
     const archiveAnchorPrice =
@@ -2615,18 +2671,21 @@ const App = () => {
 
       const timestamp = new Date(bucket * SIGNAL_REFRESH_MS).toISOString();
 
-      return deriveArchiveRecord({
-        id: `${bucket}-${index}`,
-        direction,
-        entry,
-        tpResultPips: 0,
-        slResultPips: 0,
-        outcome,
-        timestamp,
-        reviewStatus,
-        slPips,
-        rr,
-      });
+      return {
+        ...deriveArchiveRecord({
+          id: `${bucket}-${index}`,
+          direction,
+          entry,
+          tpResultPips: 0,
+          slResultPips: 0,
+          outcome,
+          timestamp,
+          reviewStatus,
+          slPips,
+          rr,
+        }),
+        dataMode: 'Simulated',
+      };
     });
 
     const qualifiedClosed = records.filter((record) => record.countedInWinRate);
@@ -2668,7 +2727,7 @@ const App = () => {
       wins,
       statusCounts,
       anchorPrice: archiveAnchorPrice,
-      sourceLabel: 'Synthetic session archive',
+      sourceLabel: 'DEMO DATA - simulated trade history for interface preview only',
     };
   }, [signalRefreshBucket, signalCardBase.livePrice, signalCardMarketFeed.livePrice]);
 
@@ -2795,7 +2854,23 @@ const App = () => {
 
     const syncSignalCardFromIndependentFeed = async () => {
       const source = await fetchIndependentXauSignalFeed('15');
-      if (!source || cancelled) return false;
+      if (cancelled) return false;
+      if (!source) {
+        const pausedFeed = buildPausedSignalFeed('15');
+        setSignalCardMarketFeed(pausedFeed);
+        setSignalCardEngineInput({
+          ...pausedFeed,
+          bucketId: signalCardRefreshBucket,
+        });
+        setSignalCardDebug((prev) => ({
+          ...prev,
+          lastFeedUpdateTime: new Date().toISOString(),
+          latestLivePrice: null,
+          candleCount: 0,
+          currentSignalStatus: 'SIGNAL PAUSED',
+        }));
+        return false;
+      }
       setSignalCardMarketFeed((previousFeed) => {
         const mergedCandles = mergeIndependentSignalCandles(previousFeed.candles, source.candles, source.timeframe);
         const nextFeed = {
@@ -2837,7 +2912,23 @@ const App = () => {
 
     const syncSignalCardFromIndependentFeed = async () => {
       const source = await fetchIndependentXauSignalFeed('15');
-      if (!source || cancelled) return false;
+      if (cancelled) return false;
+      if (!source) {
+        const pausedFeed = buildPausedSignalFeed('15');
+        setSignalCardMarketFeed(pausedFeed);
+        setSignalCardEngineInput({
+          ...pausedFeed,
+          bucketId: signalCardRefreshBucket,
+        });
+        setSignalCardDebug((prev) => ({
+          ...prev,
+          lastFeedUpdateTime: new Date().toISOString(),
+          latestLivePrice: null,
+          candleCount: 0,
+          currentSignalStatus: 'SIGNAL PAUSED',
+        }));
+        return false;
+      }
       setSignalCardMarketFeed((previousFeed) => {
         const mergedCandles = mergeIndependentSignalCandles(previousFeed.candles, source.candles, source.timeframe);
         setSignalCardDebug((prev) => ({
@@ -3331,11 +3422,14 @@ const App = () => {
                       <div className="min-w-0">
                         <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-[#00FFA3]/14 bg-[#00FFA3]/6 px-3 py-1.5">
                           <BookOpen size={14} className="text-[#00FFA3]" />
-                          <span className="text-[9px] font-black uppercase tracking-[0.2em] text-[#00FFA3]">Simulated Session Board</span>
+                          <span className="text-[9px] font-black uppercase tracking-[0.2em] text-[#00FFA3]">DEMO DATA</span>
                         </div>
                         <h2 className="text-[28px] leading-none font-black italic tracking-[-0.04em] text-white sm:text-[34px] lg:text-[40px]">
                           TRADE ARCHIVE
                         </h2>
+                        <p className="mt-3 max-w-2xl text-[12px] font-bold leading-5 text-amber-200/80">
+                          Simulated trade history for interface preview only. These are not confirmed real executions.
+                        </p>
                       </div>
 
                       <div className="grid w-full grid-cols-1 gap-3 sm:grid-cols-2 xl:max-w-[430px]">
@@ -3344,12 +3438,12 @@ const App = () => {
                           <div className={`mt-2 text-[30px] font-black leading-none sm:text-[34px] ${tradeArchiveData.totalPipsSecuredToday >= 0 ? 'text-[#00FFA3]' : 'text-red-400'}`}>
                             {tradeArchiveData.totalPipsSecuredToday >= 0 ? '+' : ''}{tradeArchiveData.totalPipsSecuredToday} pips
                           </div>
-                          <div className="mt-1.5 text-[11px] text-zinc-500">Modeled from current-session records</div>
+                          <div className="mt-1.5 text-[11px] text-amber-200/65">Demo preview, not live P/L</div>
                         </div>
                         <div className="rounded-[1.45rem] border border-white/6 bg-black/35 px-4 py-3 text-right shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] sm:px-5 sm:py-3.5">
                           <div className="text-[10px] font-black uppercase tracking-[0.18em] text-zinc-500">Session Records</div>
                           <div className="mt-2 text-[30px] font-black leading-none text-white sm:text-[34px]">{tradeArchiveData.signalsToday}</div>
-                          <div className="mt-1.5 text-[11px] text-zinc-500">Synthetic records, price-anchored</div>
+                          <div className="mt-1.5 text-[11px] text-amber-200/65">Simulated records only</div>
                         </div>
                       </div>
                     </div>
@@ -3365,9 +3459,12 @@ const App = () => {
 
                   <div className="px-4 py-4 sm:px-6 lg:px-8 lg:py-5">
                     <div className="mb-4 flex items-center justify-between gap-4">
-                      <div className="text-[11px] font-black uppercase tracking-[0.2em] text-zinc-500">Recent Simulated Records</div>
-                      <div className="rounded-full border border-white/8 bg-white/[0.03] px-3.5 py-1.5 text-[10px] font-black uppercase tracking-[0.18em] text-zinc-400">
-                        Anchored near {formatLiquidityPrice(tradeArchiveData.anchorPrice)}
+                      <div>
+                        <div className="text-[11px] font-black uppercase tracking-[0.2em] text-zinc-500">Recent Simulated Records</div>
+                        <div className="mt-1 text-[10px] font-bold uppercase tracking-[0.14em] text-amber-200/70">{tradeArchiveData.sourceLabel}</div>
+                      </div>
+                      <div className="rounded-full border border-amber-300/18 bg-amber-300/[0.06] px-3.5 py-1.5 text-[10px] font-black uppercase tracking-[0.18em] text-amber-200/80">
+                        DEMO DATA
                       </div>
                     </div>
 
@@ -3382,7 +3479,9 @@ const App = () => {
                               <div className={`text-[13px] font-black uppercase tracking-[0.16em] ${record.direction === 'BUY' ? 'text-[#00FFA3]' : 'text-red-400'}`}>
                                 {record.direction}
                               </div>
-                              <div className="mt-1 text-[10px] text-zinc-600">Simulated session record</div>
+                              <div className="mt-1 inline-flex rounded-full border border-amber-300/14 bg-amber-300/[0.05] px-2 py-0.5 text-[9px] font-black uppercase tracking-[0.12em] text-amber-200/70">
+                                {record.dataMode}
+                              </div>
                             </div>
 
                             <div className="grid grid-cols-2 gap-3 text-left xl:contents">
@@ -3614,10 +3713,12 @@ const App = () => {
            
            <div className="w-full bg-[#00FFA3]/5 border border-[#00FFA3]/20 rounded-[1rem] p-2 text-left relative overflow-hidden group hover:bg-[#00FFA3]/10 transition-all shadow-2xl">
               <div className="text-[26px] font-black text-[#00FFA3] tracking-tight font-mono drop-shadow-[0_0_10px_rgba(0,255,163,0.4)] mt-0.5">
-                {riskCalculator.lots.toFixed(2)} lots
+                {Number.isFinite(riskCalculator.lots) ? `${riskCalculator.lots.toFixed(2)} lots` : '-- lots'}
               </div>
               <p className="text-[7px] text-gray-400 mt-0.5 font-mono tracking-[0.03em] leading-3">
-                {riskCalculator.canCalculate
+                {riskCalculator.paused
+                  ? riskCalculator.emptyReason
+                  : riskCalculator.canCalculate
                   ? `STOP distance: ${riskCalculator.stopDistancePips} PIPS • RISK: $${riskCalculator.riskAmount.toFixed(2)}`
                   : `${riskCalculator.emptyReason} • AMOUNT: $${riskCalculator.riskAmount.toFixed(2)}`}
               </p>
@@ -3644,20 +3745,26 @@ const App = () => {
             <div className="pr-10 mb-6">
               <div className="text-[11px] text-zinc-500 font-black uppercase tracking-[0.24em] mb-3">PYROMANCER</div>
               <h2 className="text-4xl font-black text-white italic uppercase tracking-tighter">NEWS LOCK</h2>
-              <p className="text-sm text-zinc-500 mt-3">Fresh signals are filtered when event risk is elevated.</p>
+              <p className="text-sm text-zinc-500 mt-3">
+                {pyromancerOutput.feedConnected
+                  ? 'Fresh signals are filtered when event risk is elevated.'
+                  : 'Economic event feed not connected. Macro event lock is inactive.'}
+              </p>
             </div>
 
             <div className="grid grid-cols-2 gap-3 mb-4">
               <div className="rounded-[1.6rem] border border-white/6 bg-black/35 px-4 py-4">
                 <div className="text-[10px] text-zinc-500 font-black uppercase tracking-[0.18em] mb-2">Risk Status</div>
                 <div className={`text-[28px] font-black leading-none tracking-tight ${
-                  pyromancerOutput.currentRiskState === PYROMANCER_RISK_STATES.LOCKED
+                  !pyromancerOutput.feedConnected
+                    ? 'text-amber-300'
+                    : pyromancerOutput.currentRiskState === PYROMANCER_RISK_STATES.LOCKED
                     ? 'text-red-400'
                     : pyromancerOutput.currentRiskState === PYROMANCER_RISK_STATES.CAUTION
                       ? 'text-amber-300'
                       : 'text-[#00FFA3]'
                 }`}>
-                  {pyromancerOutput.currentRiskState}
+                  {pyromancerOutput.feedConnected ? pyromancerOutput.currentRiskState : 'INACTIVE'}
                 </div>
               </div>
               <div className="rounded-[1.6rem] border border-white/6 bg-black/35 px-4 py-4">
@@ -3669,13 +3776,17 @@ const App = () => {
             <div className="rounded-[1.9rem] border border-white/8 bg-[linear-gradient(180deg,rgba(255,255,255,0.03),rgba(255,255,255,0.015))] px-5 py-6 mb-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
               <div className="text-[10px] text-zinc-500 font-black uppercase tracking-[0.18em] mb-3">Signal Gate</div>
               <div className={`text-[30px] sm:text-[34px] font-black leading-tight tracking-tight ${
-                pyromancerOutput.currentRiskState === PYROMANCER_RISK_STATES.LOCKED
+                !pyromancerOutput.feedConnected
+                  ? 'text-amber-300'
+                  : pyromancerOutput.currentRiskState === PYROMANCER_RISK_STATES.LOCKED
                   ? 'text-red-400'
                   : pyromancerOutput.currentRiskState === PYROMANCER_RISK_STATES.CAUTION
                     ? 'text-amber-300'
                     : 'text-[#00FFA3]'
               }`}>
-                {pyromancerOutput.currentRiskState === PYROMANCER_RISK_STATES.LOCKED
+                {!pyromancerOutput.feedConnected
+                  ? 'Macro event lock inactive'
+                  : pyromancerOutput.currentRiskState === PYROMANCER_RISK_STATES.LOCKED
                   ? 'Fresh signals temporarily locked'
                   : pyromancerOutput.currentRiskState === PYROMANCER_RISK_STATES.CAUTION
                     ? 'Use caution before event'

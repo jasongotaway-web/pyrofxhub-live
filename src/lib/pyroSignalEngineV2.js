@@ -545,11 +545,13 @@ export function buildPyroSignalV2({
   const currentPriceCandidate = isValidPrice(livePrice) ? Number(livePrice) : fallbackLivePrice;
 
   if (!inputReady) {
+    const liveFeedUnavailable = inputGateReason === 'invalid_source' && source === 'scanner-unavailable';
     return buildStandbySignal({
       timeframe: normalizedTimeframe,
       bucketId,
       livePrice: currentPriceCandidate,
       explanation: invalidReason || 'Waiting for verified live signal inputs.',
+      status: liveFeedUnavailable ? 'SIGNAL PAUSED' : 'No Valid Setup',
       gateReason: inputGateReason || 'invalid_candles',
       meta: { source },
     });
