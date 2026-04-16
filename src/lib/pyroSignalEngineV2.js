@@ -75,7 +75,15 @@ function sanitizeCandles(candles) {
     .slice(-80);
 }
 
-function buildStandbySignal({ timeframe, bucketId, livePrice, status = 'No Valid Setup', explanation }) {
+function buildStandbySignal({
+  timeframe,
+  bucketId,
+  livePrice,
+  status = 'No Valid Setup',
+  explanation,
+  gateReason = 'invalid_setup',
+  meta = {},
+}) {
   const displayPrice = isValidPrice(livePrice) ? round2(livePrice) : null;
 
   return {
@@ -98,7 +106,9 @@ function buildStandbySignal({ timeframe, bucketId, livePrice, status = 'No Valid
     generatedAt: new Date().toISOString(),
     bucketId,
     meta: {
+      ...meta,
       inputReady: false,
+      gateReason,
     },
   };
 }
@@ -190,7 +200,7 @@ function getVolRegime(candles) {
   return 'NORMAL';
 }
 
-function detectDirectionalBias({ livePrice, structure, trend, momentum }) {
+function detectStrictDirectionalBias({ livePrice, structure, trend, momentum }) {
   const { recentHigh, recentLow, midpoint } = structure;
   if (recentHigh == null || recentLow == null || midpoint == null) {
     return { side: 'WAIT', reason: 'No structure' };
@@ -213,6 +223,82 @@ function detectDirectionalBias({ livePrice, structure, trend, momentum }) {
   }
 
   return { side: 'WAIT', reason: 'No clean directional edge' };
+}
+
+function detectDirectionalBias({ livePrice, structure, trend, momentum, atrValue }) {
+  const strictBias = detectStrictDirectionalBias({ livePrice, structure, trend, momentum });
+  if (strictBias.side !== 'WAIT') {
+    return {
+      ...strictBias,
+      legacyBlockingCondition: '',
+      actionableCondition: 'strict_directional_edge',
+      directionScore: strictBias.side === 'BUY' ? 4 : -4,
+    };
+  }
+
+  const { recentHigh, recentLow, midpoint } = structure;
+  if (recentHigh == null || recentLow == null || midpoint == null) {
+    return {
+      side: 'WAIT',
+      reason: strictBias.reason,
+      legacyBlockingCondition: strictBias.reason,
+      actionableCondition: 'none',
+      directionScore: 0,
+    };
+  }
+
+  const range = Math.max(recentHigh - recentLow, atrValue || 0, fromPips(CONFIG.minSlPips));
+  const momentumUnit = Math.max(atrValue || 0, fromPips(8));
+  const normalizedMomentum = momentum / momentumUnit;
+  const upperReactionZone = recentHigh - range * 0.28;
+  const lowerReactionZone = recentLow + range * 0.28;
+  let buyScore = 0;
+  let sellScore = 0;
+
+  if (trend.bullishBias) buyScore += 1.7;
+  if (trend.bearishBias) sellScore += 1.7;
+
+  if (trend.fastNow > trend.slowNow) buyScore += 0.9;
+  if (trend.fastNow < trend.slowNow) sellScore += 0.9;
+  if (trend.fastSlope > 0) buyScore += 0.65;
+  if (trend.fastSlope < 0) sellScore += 0.65;
+  if (trend.slowSlope > 0) buyScore += 0.35;
+  if (trend.slowSlope < 0) sellScore += 0.35;
+
+  if (normalizedMomentum > 0.18) buyScore += 0.95;
+  if (normalizedMomentum < -0.18) sellScore += 0.95;
+  if (normalizedMomentum > 0.65) buyScore += 0.45;
+  if (normalizedMomentum < -0.65) sellScore += 0.45;
+
+  if (livePrice >= midpoint) buyScore += 0.45;
+  if (livePrice <= midpoint) sellScore += 0.45;
+  if (livePrice >= upperReactionZone && normalizedMomentum < -0.1) sellScore += 0.7;
+  if (livePrice <= lowerReactionZone && normalizedMomentum > 0.1) buyScore += 0.7;
+
+  const topSide = buyScore >= sellScore ? 'BUY' : 'SELL';
+  const topScore = Math.max(buyScore, sellScore);
+  const scoreMargin = Math.abs(buyScore - sellScore);
+  const hasModerateDirectionalEdge = topScore >= 2.35 && scoreMargin >= 0.55;
+
+  if (!hasModerateDirectionalEdge) {
+    return {
+      side: 'WAIT',
+      reason: 'No clean directional edge',
+      legacyBlockingCondition: strictBias.reason,
+      actionableCondition: 'moderate_edge_score_failed',
+      directionScore: round2(buyScore - sellScore),
+    };
+  }
+
+  return {
+    side: topSide,
+    reason: topSide === 'BUY'
+      ? 'Moderate bullish edge from trend, structure, and momentum'
+      : 'Moderate bearish edge from trend, structure, and momentum',
+    legacyBlockingCondition: strictBias.reason,
+    actionableCondition: 'moderate_directional_edge',
+    directionScore: round2(buyScore - sellScore),
+  };
 }
 
 function buildCandidateSetup({ side, livePrice, structure, atrValue }) {
@@ -297,6 +383,26 @@ function isValidSetup(setup) {
 
   if (setup.side === 'BUY') return stop < entry && target > entry;
   return stop > entry && target < entry;
+}
+
+function getSetupValidationFailure(setup) {
+  if (!setup || (setup.side !== 'BUY' && setup.side !== 'SELL')) return 'invalid_setup';
+  const entry = Number(setup.entry);
+  const stop = Number(setup.stop);
+  const target = Number(setup.target);
+  const bePrice = Number(setup.bePrice);
+  if (![entry, stop, target].every(isValidPrice)) return 'invalid_setup';
+  if (Number.isFinite(bePrice) && !isValidPrice(bePrice)) return 'invalid_setup';
+
+  const stopDistance = Math.abs(entry - stop);
+  const targetDistance = Math.abs(target - entry);
+  const stopPips = toPips(stopDistance);
+  if (stopPips < CONFIG.minSlPips || stopPips > CONFIG.maxSlPips) return 'invalid_setup';
+  if (targetDistance <= 0 || targetDistance > stopDistance * 4) return 'invalid_rr';
+
+  if (setup.side === 'BUY' && !(stop < entry && target > entry)) return 'invalid_setup';
+  if (setup.side === 'SELL' && !(stop > entry && target < entry)) return 'invalid_setup';
+  return '';
 }
 
 function calcProgressPercent(setup, livePrice) {
@@ -430,6 +536,8 @@ export function buildPyroSignalV2({
   previousSignal = null,
   inputReady = true,
   invalidReason = '',
+  inputGateReason = '',
+  source = 'unknown',
 }) {
   const normalizedTimeframe = String(timeframe || CONFIG.timeframe);
   const safeCandles = sanitizeCandles(candles);
@@ -442,6 +550,8 @@ export function buildPyroSignalV2({
       bucketId,
       livePrice: currentPriceCandidate,
       explanation: invalidReason || 'Waiting for verified live signal inputs.',
+      gateReason: inputGateReason || 'invalid_candles',
+      meta: { source },
     });
   }
 
@@ -451,6 +561,8 @@ export function buildPyroSignalV2({
       bucketId,
       livePrice: currentPriceCandidate,
       explanation: 'Not enough valid chart-aligned candle data to generate a setup.',
+      gateReason: safeCandles.length < CONFIG.minCandles ? 'insufficient_candles' : 'invalid_live_price',
+      meta: { source, candleCount: safeCandles.length },
     });
   }
 
@@ -461,6 +573,8 @@ export function buildPyroSignalV2({
       bucketId,
       livePrice: currentPriceCandidate,
       explanation: 'Live price and candle feed are not aligned enough to generate a setup.',
+      gateReason: 'live_price_mismatch',
+      meta: { source, latestClose: round2(latestClose) },
     });
   }
 
@@ -476,6 +590,7 @@ export function buildPyroSignalV2({
     structure,
     trend,
     momentum,
+    atrValue,
   });
 
   let candidateSetup = buildCandidateSetup({
@@ -485,13 +600,16 @@ export function buildPyroSignalV2({
     atrValue,
   });
 
-  if (!isValidSetup(candidateSetup)) {
+  let setupGateReason = bias.side === 'WAIT' ? 'no_actionable_thesis' : getSetupValidationFailure(candidateSetup);
+
+  if (setupGateReason) {
     candidateSetup = null;
   }
 
   const zoneAligned = isSetupInCurrentMarketZone(candidateSetup, currentPrice, atrValue);
 
   if (!zoneAligned) {
+    if (!setupGateReason && bias.side !== 'WAIT') setupGateReason = 'invalid_setup';
     candidateSetup = null;
   }
 
@@ -522,10 +640,16 @@ export function buildPyroSignalV2({
       stopDistance: round2(Math.abs(previousSetup.entry - previousSetup.stop)),
       stopPips: Math.round(toPips(Math.abs(previousSetup.entry - previousSetup.stop))),
     };
+    setupGateReason = '';
   }
 
   const state = calcTriggerState(activeSetup, currentPrice, atrValue);
   const hasActionableSetup = isValidSetup(activeSetup) && state.validity === 'VALID';
+  const gateReason = hasActionableSetup
+    ? 'actionable'
+    : activeSetup && state.validity === 'STANDBY'
+      ? 'waiting_for_trigger'
+      : setupGateReason || getSetupValidationFailure(activeSetup) || 'invalid_setup';
   const confidence = hasActionableSetup
     ? scoreConfidence({
         side: state.title.startsWith('BUY') ? 'BUY' : state.title.startsWith('SELL') ? 'SELL' : 'WAIT',
@@ -560,7 +684,15 @@ export function buildPyroSignalV2({
     generatedAt: new Date().toISOString(),
     bucketId,
     meta: {
+      inputReady: true,
+      source,
+      gateReason,
+      setupThesisActionable: hasActionableSetup,
+      setupValidationPassed: isValidSetup(activeSetup),
       biasReason: bias.reason,
+      legacyBlockingCondition: bias.legacyBlockingCondition || '',
+      actionableCondition: bias.actionableCondition || '',
+      directionScore: Number.isFinite(bias.directionScore) ? round2(bias.directionScore) : 0,
       volRegime,
       momentum: round2(momentum),
       atr: round2(atrValue),

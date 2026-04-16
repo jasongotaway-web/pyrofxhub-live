@@ -25,7 +25,7 @@ import {
 
 const SIGNAL_REFRESH_MS = 10 * 60 * 1000;
 const SIGNAL_CARD_REFRESH_MS = 10 * 60 * 1000;
-const SHOW_SIGNAL_DEBUG = import.meta.env.VITE_SHOW_SIGNAL_DEBUG === 'true';
+const SHOW_SIGNAL_DEBUG = import.meta.env.VITE_SHOW_SIGNAL_DEBUG !== 'false';
 const APP_TIME_ZONE = 'Asia/Singapore';
 const APP_GMT8_OFFSET_MS = 8 * 60 * 60 * 1000;
 const WEB3FORMS_ACCESS_KEY = '3a2768c0-52df-46c3-a74e-fdbf1ffec7b6';
@@ -243,6 +243,7 @@ function sanitizeSignalCandles(candles) {
 function validateSignalEngineInput(input) {
   const timeframe = String(input?.timeframe ?? '15').replace(/[^0-9A-Z]/gi, '') || '15';
   const source = String(input?.source ?? 'unknown');
+  const rawCandles = Array.isArray(input?.candles) ? input.candles : [];
   const candles = sanitizeSignalCandles(input?.candles);
   const livePrice = Number(input?.livePrice);
   const hasLivePrice = isValidXauPrice(livePrice);
@@ -253,6 +254,18 @@ function validateSignalEngineInput(input) {
     ? Math.abs(livePrice - latestClose) <= 75
     : false;
   const actionable = hasLivePrice && hasCandles && liveMatchesCandles && hasActionableSource;
+  const candleValidationPassed = rawCandles.length > 0 && candles.length > 0;
+  const gateReason = !hasActionableSource
+    ? 'invalid_source'
+    : !hasLivePrice
+      ? 'invalid_live_price'
+      : !candleValidationPassed
+        ? 'invalid_candles'
+        : !hasCandles
+          ? 'insufficient_candles'
+          : !liveMatchesCandles
+            ? 'live_price_mismatch'
+            : 'input_ready';
   const reason = !hasActionableSource
     ? 'Waiting for verified live signal feed.'
     : !hasLivePrice
@@ -266,6 +279,21 @@ function validateSignalEngineInput(input) {
   return {
     actionable,
     reason,
+    gateReason,
+    debug: {
+      source,
+      rawCandleCount: rawCandles.length,
+      candleCount: candles.length,
+      livePrice: hasLivePrice ? roundPrice(livePrice) : null,
+      latestCandleClose: isValidXauPrice(latestClose) ? roundPrice(latestClose) : null,
+      candleValidationPassed,
+      enoughCandles: hasCandles,
+      sourceValidationPassed: hasActionableSource,
+      livePriceValidationPassed: hasLivePrice,
+      livePriceMatchesCandles: liveMatchesCandles,
+      gateReason,
+      finalReason: reason,
+    },
     input: {
       candles: actionable ? candles : [],
       livePrice: hasLivePrice ? roundPrice(livePrice) : null,
@@ -273,6 +301,68 @@ function validateSignalEngineInput(input) {
       source,
       bucketId: input?.bucketId ?? null,
     },
+  };
+}
+
+function getSignalLevelValidation(signal) {
+  const side = signal?.side;
+  const entry = Number(signal?.entry);
+  const stop = Number(signal?.stop);
+  const target = Number(signal?.target);
+  const hasNumbers = [entry, stop, target].every(isValidXauPrice);
+  const directional = side === 'BUY'
+    ? stop < entry && target > entry
+    : side === 'SELL'
+      ? stop > entry && target < entry
+      : false;
+  const stopDistance = hasNumbers ? Math.abs(entry - stop) : 0;
+  const targetDistance = hasNumbers ? Math.abs(target - entry) : 0;
+  const rr = stopDistance > 0 ? targetDistance / stopDistance : null;
+  const rrValid = Number.isFinite(rr) && rr > 0 && rr <= 4;
+
+  return {
+    passed: hasNumbers && directional && rrValid,
+    hasNumbers,
+    directional,
+    rrValid,
+    rr: Number.isFinite(rr) ? Number(rr.toFixed(2)) : null,
+  };
+}
+
+function buildSignalGateDebug({ engineInput, validatedInput, engineSignal }) {
+  const inputDebug = validatedInput?.debug ?? {};
+  const levelValidation = getSignalLevelValidation(engineSignal);
+  const engineGateReason = engineSignal?.meta?.gateReason ?? '';
+  const gateReason = validatedInput?.gateReason && validatedInput.gateReason !== 'input_ready'
+    ? validatedInput.gateReason
+    : engineGateReason || (engineSignal?.side === 'WAIT' ? 'no_actionable_thesis' : 'actionable');
+
+  return {
+    scannerSource: inputDebug.source ?? engineInput?.source ?? 'unknown',
+    candleCount: inputDebug.candleCount ?? 0,
+    rawCandleCount: inputDebug.rawCandleCount ?? 0,
+    livePrice: inputDebug.livePrice ?? null,
+    latestCandleClose: inputDebug.latestCandleClose ?? null,
+    candleValidationPassed: !!inputDebug.candleValidationPassed,
+    enoughCandles: !!inputDebug.enoughCandles,
+    sourceValidationPassed: !!inputDebug.sourceValidationPassed,
+    livePriceValidationPassed: !!inputDebug.livePriceValidationPassed,
+    livePriceMatchesCandles: !!inputDebug.livePriceMatchesCandles,
+    entryStopTargetValidationPassed: levelValidation.passed,
+    rrValidationPassed: levelValidation.rrValid,
+    rr: levelValidation.rr,
+    setupThesisActionable: engineSignal?.side === 'BUY' || engineSignal?.side === 'SELL'
+      ? engineSignal?.validity === 'VALID' && levelValidation.passed
+      : false,
+    engineValidity: engineSignal?.validity ?? 'UNKNOWN',
+    engineStatus: engineSignal?.status ?? 'UNKNOWN',
+    engineSide: engineSignal?.side ?? 'WAIT',
+    engineReason: engineSignal?.explanation ?? '',
+    oldBlockingCondition: engineSignal?.meta?.legacyBlockingCondition ?? '',
+    newActionableCondition: engineSignal?.meta?.actionableCondition ?? '',
+    directionScore: engineSignal?.meta?.directionScore ?? null,
+    gateReason,
+    finalReason: inputDebug.finalReason || engineSignal?.explanation || '',
   };
 }
 
@@ -2370,9 +2460,20 @@ const App = () => {
         ...validatedSignalCardEngineInput.input,
         inputReady: validatedSignalCardEngineInput.actionable,
         invalidReason: validatedSignalCardEngineInput.reason,
+        inputGateReason: validatedSignalCardEngineInput.gateReason,
         previousSignal: validatedSignalCardEngineInput.actionable ? signalCardPreviousSignalRef.current : null,
       }),
     [validatedSignalCardEngineInput]
+  );
+
+  const signalGateDebug = useMemo(
+    () =>
+      buildSignalGateDebug({
+        engineInput: signalCardEngineInput,
+        validatedInput: validatedSignalCardEngineInput,
+        engineSignal: signalCardEngineSignal,
+      }),
+    [signalCardEngineInput, signalCardEngineSignal, validatedSignalCardEngineInput]
   );
 
   useEffect(() => {
@@ -2385,7 +2486,10 @@ const App = () => {
       engineRecomputeTime: new Date().toISOString(),
       currentSignalStatus: signalCardEngineSignal.status,
     }));
-  }, [signalCardEngineSignal]);
+    if (SHOW_SIGNAL_DEBUG) {
+      console.debug('[PYROFXHUB signal gate]', signalGateDebug);
+    }
+  }, [signalCardEngineSignal, signalGateDebug]);
 
   const signalCardBase = useMemo(() => {
     const stop = Number.isFinite(signalCardEngineSignal.stop) && signalCardEngineSignal.stop > 0 ? signalCardEngineSignal.stop : null;
@@ -3469,13 +3573,25 @@ const App = () => {
               </div>
                {SHOW_SIGNAL_DEBUG ? (
                  <div className="mt-2 rounded-[0.9rem] border border-white/8 bg-black/35 p-2">
-                    <div className="mb-1 text-[8px] font-black uppercase tracking-[0.14em] text-amber-300">Signal Debug</div>
+                    <div className="mb-1 text-[8px] font-black uppercase tracking-[0.14em] text-amber-300">Signal Gate Debug</div>
                     <div className="grid grid-cols-2 gap-x-2 gap-y-1 text-[8px] leading-3 text-zinc-400 font-mono">
                        <div>Feed: {signalCardDebug.lastFeedUpdateTime ? formatGmt8Time(new Date(signalCardDebug.lastFeedUpdateTime), { hour12: false, second: '2-digit' }) : '--:--:--'}</div>
-                       <div>Live: {Number.isFinite(signalCardDebug.latestLivePrice) ? signalCardDebug.latestLivePrice.toFixed(2) : '--'}</div>
-                       <div>Candles: {signalCardDebug.candleCount}</div>
+                       <div>Source: {signalGateDebug.scannerSource}</div>
+                       <div>Live: {Number.isFinite(signalGateDebug.livePrice) ? signalGateDebug.livePrice.toFixed(2) : '--'}</div>
+                       <div>Close: {Number.isFinite(signalGateDebug.latestCandleClose) ? signalGateDebug.latestCandleClose.toFixed(2) : '--'}</div>
+                       <div>Candles: {signalGateDebug.candleCount}/{SIGNAL_MIN_CANDLES}</div>
                        <div>Engine: {signalCardDebug.engineRecomputeTime ? formatGmt8Time(new Date(signalCardDebug.engineRecomputeTime), { hour12: false, second: '2-digit' }) : '--:--:--'}</div>
-                       <div className="col-span-2">Status: {signalCardDebug.currentSignalStatus}</div>
+                       <div>Status: {signalCardDebug.currentSignalStatus}</div>
+                       <div>Src Gate: {signalGateDebug.sourceValidationPassed ? 'PASS' : 'FAIL'}</div>
+                       <div>Candle Gate: {signalGateDebug.candleValidationPassed && signalGateDebug.enoughCandles ? 'PASS' : 'FAIL'}</div>
+                       <div>Price Match: {signalGateDebug.livePriceMatchesCandles ? 'PASS' : 'FAIL'}</div>
+                       <div>Levels: {signalGateDebug.entryStopTargetValidationPassed ? 'PASS' : 'FAIL'}</div>
+                       <div>RR: {signalGateDebug.rrValidationPassed ? `PASS ${signalGateDebug.rr ?? ''}` : 'FAIL'}</div>
+                       <div>Thesis: {signalGateDebug.setupThesisActionable ? 'ACTIONABLE' : 'BLOCKED'}</div>
+                       <div className="col-span-2">Old Block: {signalGateDebug.oldBlockingCondition || '--'}</div>
+                       <div className="col-span-2">New Cond: {signalGateDebug.newActionableCondition || '--'} {Number.isFinite(signalGateDebug.directionScore) ? `(${signalGateDebug.directionScore})` : ''}</div>
+                       <div className="col-span-2 text-amber-200">gateReason: {signalGateDebug.gateReason}</div>
+                       <div className="col-span-2 text-zinc-500">reason: {signalGateDebug.finalReason || signalGateDebug.engineReason || '--'}</div>
                     </div>
                  </div>
                ) : null}
