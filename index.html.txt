@@ -1,0 +1,348 @@
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { 
+  Flame,      
+  Waves,
+  Crosshair,
+  Wand2,
+  X,
+  BookOpen,
+  ArrowUpRight,
+  ArrowDownRight,
+  Settings,
+  LogOut,
+  Crown,
+  MessageCircle, 
+  Send,
+  Activity,
+  Zap,
+  ShieldCheck,
+  Target
+} from 'lucide-react';
+
+/**
+ * PYROFXHUB V2.5.0 - PRODUCTION READY
+ * --------------------------------------------------
+ * 1. 价格对标：使用 TradingView Ticker 解决物理同步问题
+ * 2. 指标解锁：开放 Toolbar 以支持所有内置 Indicator
+ * 3. 视觉还原：高度适配用户提供的截图细节
+ */
+
+const App = () => {
+  // --- 状态与配置 ---
+  const [activeTab, setActiveTab] = useState('execution'); 
+  const [showPyromancer, setShowPyromancer] = useState(false);
+  const [showV2Modal, setShowV2Modal] = useState(false);
+  const [balance, setBalance] = useState(10000);
+  const [riskPercent, setRiskPercent] = useState(2);
+
+  // 国际化文案 (精准对标截图)
+  const t = {
+    CN: {
+      exec: "执行终端",
+      execRepeat: "执行终端终端",
+      liq: "流动性扫描",
+      journal: "交易日志",
+      pyro: "先知系统",
+      beta: "BETA 模式",
+      data: "实时流数据",
+      balance: "账户净值",
+      alloc: "风险占比",
+      lot: "智能仓位",
+      target: "目标扩展",
+      stop: "风险截断",
+      entry: "入场位置",
+      v2Title: "V2 全球内测",
+      v2Desc: "下一代神经模拟算法即将开启。包含多资产同步扫描与深度流动性热图。",
+      v2PopTitle: "Stay Tuned for V2",
+      marketStatus: "LIVE 连接中",
+      delta: "实时获利进度"
+    }
+  }['CN'];
+
+  // 静态信号参数
+  const activeSignal = {
+    type: "BUY",
+    entry: 4795.50,
+    tp: 4818.20,
+    sl: 4788.00,
+    conf: "98.2%"
+  };
+
+  // --- 效果 1: 物理价格同步 (Ticker Widget) ---
+  useEffect(() => {
+    const container = document.getElementById('tv-ticker-container');
+    if (container) {
+      container.innerHTML = ''; 
+      const script = document.createElement('script');
+      script.src = 'https://s3.tradingview.com/external-embedding/embed-widget-tickers.js';
+      script.type = 'text/javascript';
+      script.async = true;
+      script.innerHTML = JSON.stringify({
+        "symbols": [{ "proName": "OANDA:XAUUSD", "title": "GOLD" }],
+        "colorTheme": "dark",
+        "isTransparent": true,
+        "showSymbolLogo": true,
+        "locale": "zh_CN"
+      });
+      container.appendChild(script);
+    }
+  }, []);
+
+  // --- 效果 2: 全功能图表 (支持指标) ---
+  const tvContainer = useRef(null);
+  useEffect(() => {
+    if (activeTab === 'execution' && tvContainer.current) {
+      const containerId = "tv_main_chart_prod";
+      tvContainer.current.id = containerId;
+      
+      const script = document.createElement('script');
+      script.src = 'https://s3.tradingview.com/tv.js';
+      script.async = true;
+      script.onload = () => {
+        if (window.TradingView) {
+          new window.TradingView.widget({
+            autosize: true,
+            symbol: "OANDA:XAUUSD",
+            interval: "15",
+            theme: "dark",
+            style: "1",
+            locale: "zh",
+            toolbar_bg: "#050505",
+            enable_publishing: false,
+            hide_top_toolbar: false, // 允许使用指标面板
+            hide_side_toolbar: false, // 允许使用画图工具
+            allow_symbol_change: true,
+            container_id: containerId,
+            backgroundColor: "#050505",
+            gridColor: "rgba(255,255,255,0.02)",
+            disabled_features: ["header_screenshot"], // 仅禁用不需要的截图功能
+          });
+        }
+      };
+      document.head.appendChild(script);
+      return () => script.remove();
+    }
+  }, [activeTab]);
+
+  return (
+    <div className="flex h-screen w-full bg-[#050505] text-[#EAEAEA] font-sans overflow-hidden">
+      
+      {/* 侧边栏 Sidebar */}
+      <nav className="w-20 flex flex-col items-center py-8 border-r border-white/5 bg-[#080808] z-[120] shadow-2xl">
+        <div className="mb-12 text-[#00FFA3] drop-shadow-[0_0_15px_rgba(0,255,163,0.6)] animate-pulse">
+          <Flame size={32} fill="currentColor" />
+        </div>
+        
+        <div className="flex-1 flex flex-col gap-8 items-center">
+          <SidebarIcon active={activeTab === 'execution'} icon={<Crosshair size={22} />} label={t.exec} onClick={() => setActiveTab('execution')} />
+          <SidebarIcon active={activeTab === 'liquidity'} icon={<Waves size={22} />} label={t.liq} onClick={() => setActiveTab('liquidity')} />
+          <SidebarIcon icon={<Wand2 size={22} />} label={t.pyro} onClick={() => setShowPyromancer(true)} />
+          <SidebarIcon active={activeTab === 'journal'} icon={<BookOpen size={22} />} label={t.journal} onClick={() => setActiveTab('journal')} />
+          
+          <div className="w-8 h-[1px] bg-white/10 my-2" />
+          
+          <button onClick={() => setShowV2Modal(true)} className="p-3 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-amber-500 hover:scale-110 transition-all shadow-lg active:scale-95">
+            <Crown size={22} />
+          </button>
+        </div>
+
+        {/* 底部功能区 - 还原截图图标 */}
+        <div className="mt-auto flex flex-col gap-6 mb-2">
+          <button className="p-3 text-gray-600 hover:text-white transition-colors"><Settings size={22} /></button>
+          <button className="p-3 text-gray-600 hover:text-white transition-colors"><LogOut size={22} /></button>
+          <div className="w-8 h-[1px] bg-white/10" />
+          <button className="p-3 rounded-2xl bg-sky-500/10 border border-sky-500/20 text-sky-400 hover:scale-110 transition-all shadow-lg"><Send size={22} /></button>
+          <button className="p-3 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 hover:scale-110 transition-all shadow-lg"><MessageCircle size={22} /></button>
+        </div>
+      </nav>
+
+      <main className="flex-1 flex flex-col overflow-hidden relative">
+        
+        {/* Header - 物理同步价格栏 */}
+        <header className="h-16 border-b border-white/5 bg-[#0A0A0A]/95 flex items-center justify-between px-8 z-50 backdrop-blur-xl">
+          <div className="flex items-center gap-6">
+            <h1 className="text-xl font-black italic tracking-tighter text-white uppercase select-none">PYRO<span className="text-[#00FFA3]">HUB</span></h1>
+            <div className="h-6 w-[1px] bg-white/10 mx-2" />
+            
+            {/* 实时价格容器 */}
+            <div id="tv-ticker-container" className="w-[180px] h-full flex items-center overflow-hidden opacity-90 scale-90 origin-left">
+               {/* TradingView Ticker Loads Here */}
+            </div>
+          </div>
+
+          <div className="flex items-center gap-4">
+             <div className="px-4 py-1.5 bg-amber-500/10 border border-amber-500/30 rounded-full shadow-[0_0_15px_rgba(245,158,11,0.1)]">
+                <span className="text-[10px] font-black text-amber-500 tracking-widest uppercase italic">● {t.beta}</span>
+             </div>
+          </div>
+        </header>
+
+        {/* 滚动工作区 */}
+        <div className="flex-1 overflow-y-auto p-6 flex flex-col gap-6 custom-scrollbar bg-[#050505]">
+          {activeTab === 'execution' && (
+            <>
+              {/* 指标摘要 */}
+              <section className="grid grid-cols-4 gap-4 animate-in fade-in duration-700">
+                <Card icon={<Activity size={14} />} label="MARKET BIAS" value="INSTITUTIONAL" color="#60A5FA" />
+                <Card icon={<Zap size={14} />} label="LIVE VOLATILITY" value="0.44%" color="#00FFA3" />
+                <Card icon={<ShieldCheck size={14} />} label="RISK FILTER" value="PASSED" color="#10B981" />
+                <Card icon={<Target size={14} />} label="TARGET REWARD" value="3.50 UNIT" color="#00FFA3" />
+              </section>
+
+              {/* 核心图表区域 */}
+              <section className="flex-1 min-h-[520px] bg-[#0A0A0A] border border-white/5 rounded-[2.5rem] overflow-hidden relative shadow-2xl group transition-all">
+                <div className="absolute inset-0" ref={tvContainer} />
+              </section>
+            </>
+          )}
+
+          {activeTab === 'liquidity' && (
+            <div className="flex-1 flex items-center justify-center p-20 animate-in slide-in-from-bottom-4 duration-500">
+              <div className="text-center">
+                <Waves size={64} className="text-[#00FFA3] mx-auto mb-6 opacity-20" />
+                <h2 className="text-2xl font-black italic text-gray-700">SCANNING LIQUIDITY MATRIX...</h2>
+              </div>
+            </div>
+          )}
+        </div>
+      </main>
+
+      {/* 右侧执行面板 */}
+      <aside className="w-[420px] bg-[#080808] border-l border-white/5 flex flex-col shadow-[-30px_0_60px_rgba(0,0,0,0.7)] z-[100]">
+        <div className="p-8 space-y-8 flex-1 overflow-y-auto custom-scrollbar">
+           <div className="flex justify-between items-center">
+              <span className="text-[11px] font-black uppercase tracking-[0.4em] text-[#00FFA3] italic">{t.execRepeat}</span>
+              <div className="px-3 py-1 bg-emerald-500/10 border border-emerald-500/30 rounded-full text-[9px] font-black text-emerald-500 tracking-widest">LOCKED</div>
+           </div>
+
+           {/* 信号模块 - 还原发光进度条 */}
+           <div className="bg-[#0A0A0A] border border-[#00FFA3]/30 rounded-[3rem] p-8 shadow-[0_0_50px_rgba(0,255,163,0.05)] relative overflow-hidden">
+              <div className="flex justify-between items-start mb-10">
+                 <div>
+                    <h2 className="text-3xl font-black italic tracking-tighter text-white uppercase">{activeSignal.type} XAUUSD</h2>
+                    <p className="text-[9px] text-gray-600 font-black uppercase tracking-[0.2em] mt-2">Neural Projection V4</p>
+                 </div>
+                 <div className="text-right">
+                    <span className="text-xs font-mono text-[#00FFA3] font-black italic">{activeSignal.conf}</span>
+                    <div className="text-[8px] text-gray-700 font-black uppercase">CONF.</div>
+                 </div>
+              </div>
+
+              <div className="bg-black/40 rounded-[2rem] p-7 border border-white/5 space-y-7 mb-10 shadow-inner">
+                 <div className="flex justify-between items-center pb-5 border-b border-white/5">
+                    <span className="text-[10px] text-gray-500 uppercase font-black italic tracking-widest">{t.entry}</span>
+                    <span className="text-2xl font-black font-mono text-white tracking-tighter">{activeSignal.entry.toFixed(2)}</span>
+                 </div>
+                 <div className="flex justify-between">
+                    <div>
+                      <span className="text-[9px] text-[#00FFA3] uppercase font-black italic tracking-widest block mb-1">{t.target}</span>
+                      <span className="text-xl font-black font-mono text-[#00FFA3]">{activeSignal.tp.toFixed(2)}</span>
+                    </div>
+                    <div className="text-right">
+                      <span className="text-[9px] text-red-500 uppercase font-black italic tracking-widest block mb-1">{t.stop}</span>
+                      <span className="text-xl font-black font-mono text-red-500">{activeSignal.sl.toFixed(2)}</span>
+                    </div>
+                 </div>
+              </div>
+
+              {/* 获利百分比进度条 */}
+              <div className="space-y-4">
+                 <div className="flex justify-between text-[10px] text-gray-500 font-black uppercase tracking-widest">
+                    <span>{t.delta}</span>
+                    <span className="text-[#00FFA3] font-mono animate-pulse">68.5%</span>
+                 </div>
+                 <div className="h-3.5 w-full bg-black/80 rounded-full p-0.5 border border-white/10 overflow-hidden relative shadow-inner">
+                    <div 
+                      className="h-full bg-gradient-to-r from-[#00FFA3]/30 via-[#00FFA3] to-[#00FFA3] rounded-full transition-all duration-1000 shadow-[0_0_20px_rgba(0,255,163,0.7)]" 
+                      style={{ width: '68.5%' }} 
+                    />
+                 </div>
+              </div>
+           </div>
+
+           <div className="grid grid-cols-2 gap-4">
+              <div className="bg-white/[0.03] border border-white/5 p-6 rounded-[2rem] shadow-xl">
+                 <div className="text-[9px] text-gray-600 font-black uppercase mb-1 tracking-widest italic">Status</div>
+                 <div className="text-xs font-black text-[#00FFA3] uppercase tracking-widest">{t.marketStatus}</div>
+              </div>
+              <div className="bg-white/[0.03] border border-white/5 p-6 rounded-[2rem] text-right shadow-xl">
+                 <div className="text-[9px] text-gray-600 font-black uppercase mb-1 tracking-widest italic">Spread</div>
+                 <div className="text-xs font-black text-white font-mono">0.12 Pips</div>
+              </div>
+           </div>
+        </div>
+
+        {/* 底部输入与计算器 */}
+        <div className="p-8 bg-[#060606] border-t border-white/5 rounded-t-[4rem] shadow-2xl">
+           <div className="grid grid-cols-2 gap-5 mb-8">
+              <InputBox label={t.balance} value={balance} onChange={setBalance} />
+              <InputBox label={t.alloc} value={riskPercent} onChange={setRiskPercent} color="#00FFA3" />
+           </div>
+           
+           <div className="w-full bg-[#00FFA3]/5 border border-[#00FFA3]/20 rounded-[3rem] p-10 text-center relative overflow-hidden group hover:bg-[#00FFA3]/10 transition-all shadow-2xl">
+              <span className="text-[10px] font-black text-gray-600 uppercase tracking-[0.5em] block mb-5 italic">{t.lot}计算</span>
+              <div className="text-7xl font-black text-[#00FFA3] tracking-tighter font-mono drop-shadow-[0_0_25px_rgba(0,255,163,0.6)] animate-in zoom-in duration-500">2.67</div>
+              <p className="text-[9px] text-gray-800 mt-6 font-mono uppercase italic tracking-widest">SYNCED TO 4800 RANGE</p>
+              
+              {/* 右下角工具占位图标 */}
+              <div className="absolute bottom-6 right-6 flex flex-col gap-2.5 opacity-20 group-hover:opacity-50 transition-all">
+                 <div className="w-5 h-5 bg-white/20 rounded-md rotate-45" />
+                 <div className="w-5 h-5 border border-white/20 rounded-full" />
+              </div>
+           </div>
+        </div>
+      </aside>
+
+      {/* 全局全局模态框 */}
+      {showV2Modal && <div className="absolute inset-0 z-[200] bg-black/95 backdrop-blur-3xl flex items-center justify-center p-6 animate-in fade-in duration-300">
+         <div className="max-w-md w-full p-12 bg-[#0A0A0A] border border-amber-500/40 rounded-[3.5rem] text-center shadow-[0_0_100px_rgba(245,158,11,0.2)]">
+            <Crown size={60} className="text-amber-500 mx-auto mb-8 drop-shadow-[0_0_20px_rgba(245,158,11,0.5)]" />
+            <h2 className="text-4xl font-black text-white italic uppercase mb-6 tracking-tighter">{t.v2PopTitle}</h2>
+            <p className="text-sm text-gray-500 leading-relaxed mb-10 italic">"{t.v2Desc}"</p>
+            <button onClick={() => setShowV2Modal(false)} className="w-full py-5 bg-amber-500 text-black font-black uppercase rounded-2xl shadow-xl hover:scale-105 active:scale-95 transition-all tracking-widest">Acknowledge</button>
+         </div>
+      </div>}
+
+      <style>{`
+        .custom-scrollbar::-webkit-scrollbar { width: 5px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(0,255,163,0.1); border-radius: 10px; }
+        body { background-color: #050505; color: #EAEAEA; user-select: none; }
+        #tv-ticker-container iframe { pointer-events: none !important; }
+      `}</style>
+    </div>
+  );
+};
+
+// 辅助组件
+const SidebarIcon = ({ icon, label, onClick, active }) => (
+  <button onClick={onClick} className={`group relative p-4 rounded-2xl transition-all duration-300 ${active ? 'bg-[#00FFA3]/10 text-[#00FFA3] shadow-[0_0_25px_rgba(0,255,163,0.15)]' : 'text-gray-600 hover:text-white hover:bg-white/5'} active:scale-90`}>
+    {icon}
+    <div className="absolute left-20 bg-[#0F0F0F] border border-white/10 text-[10px] font-black uppercase text-[#00FFA3] px-5 py-3 rounded-2xl opacity-0 group-hover:opacity-100 transition-all z-[150] shadow-2xl tracking-[0.2em] pointer-events-none">{label}</div>
+  </button>
+);
+
+const Card = ({ label, value, color, icon }) => (
+  <div className="bg-[#0A0A0A] border border-white/5 rounded-[2rem] p-6 border-b-2 shadow-xl hover:bg-white/[0.02] transition-colors" style={{ borderBottomColor: `${color}55` }}>
+    <div className="flex items-center gap-2.5 mb-2.5">
+       <span className="text-gray-500">{icon}</span>
+       <div className="text-gray-600 uppercase tracking-widest text-[9px] font-black italic">{label}</div>
+    </div>
+    <div className="text-sm font-black tracking-tight uppercase font-mono italic" style={{ color }}>{value}</div>
+  </div>
+);
+
+const InputBox = ({ label, value, onChange, color="#fff" }) => (
+  <div className="bg-black/40 border border-white/5 rounded-2xl p-5 text-center shadow-inner">
+     <div className="text-[9px] text-gray-700 font-black uppercase mb-2 tracking-[0.2em] italic">{label}</div>
+     <input 
+       type="number" 
+       value={value} 
+       onChange={(e) => onChange(Number(e.target.value))} 
+       className="bg-transparent w-full text-center text-xl font-black font-mono outline-none" 
+       style={{ color }}
+     />
+  </div>
+);
+
+export default App;
